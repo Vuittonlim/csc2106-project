@@ -1,0 +1,42 @@
+# Do take note these are just example files!
+# Arduino build artifacts
+build/
+.pio/
+*.elf
+*.bin
+*.hex
+*.map
+
+# Arduino IDE cache
+.arduino15/
+
+# MicroPython compiled bytecode
+*.mpy
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.env/
+env/
+
+# Secrets & config (broker credentials, Wi-Fi passwords)
+config.py
+secrets.py
+*.env
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Node.js (if using a JS-based dashboard)
+node_modules/
+dist/
+.next/
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
