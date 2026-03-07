@@ -40,3 +40,9 @@ dist/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Config file
+config.py
+
+# Etc
+.idea
