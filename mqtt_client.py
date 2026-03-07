@@ -2,9 +2,11 @@ import time
 import network
 from umqtt.simple import MQTTClient
 from config import (
+    USE_LOCAL_BROKER,
     WIFI_SSID, WIFI_PASSWORD,
     MQTT_BROKER, MQTT_PORT,
     MQTT_USER, MQTT_PASSWORD,
+    LOCAL_BROKER, LOCAL_PORT,
     CLIENT_ID
 )
 
@@ -32,22 +34,33 @@ def connect_wifi():
 
 
 def connect_mqtt():
-    client = MQTTClient(
-        client_id=CLIENT_ID,
-        server=MQTT_BROKER,
-        port=MQTT_PORT,
-        user=MQTT_USER,
-        password=MQTT_PASSWORD,
-        ssl=True,
-        ssl_params={"server_hostname": MQTT_BROKER}
-    )
+    if USE_LOCAL_BROKER:
+        print("Connecting to local Mosquitto broker...")
+        client = MQTTClient(
+            client_id=CLIENT_ID,
+            server=LOCAL_BROKER,
+            port=LOCAL_PORT
+        )
+    else:
+        print("Connecting to HiveMQ Cloud...")
+        client = MQTTClient(
+            client_id=CLIENT_ID,
+            server=MQTT_BROKER,
+            port=MQTT_PORT,
+            user=MQTT_USER,
+            password=MQTT_PASSWORD,
+            ssl=True,
+            ssl_params={"server_hostname": MQTT_BROKER}
+        )
+        
     retries = 0
     max_retries = 5
 
     while retries < max_retries:
         try:
             client.connect()
-            print("MQTT connected to", MQTT_BROKER)
+            broker = LOCAL_BROKER if USE_LOCAL_BROKER else MQTT_BROKER
+            print("MQTT connected to", broker)
             return client
         except Exception as e:
             retries += 1
