@@ -12,6 +12,7 @@ const char* topicSound = "sit/canteen/sensor/sound";
 const char* topicBLE   = "sit/canteen/sensor/ble";
 const char* topicCrowd = "sit/canteen/crowd/index";
 const char* topicStatus = "sit/canteen/status/m5stick";
+const char* topicConfidence = "sit/canteen/crowd/confidence";
 
 extern String currentSoundLevel;
 extern String currentCrowdLabel;
@@ -40,24 +41,28 @@ void setupMQTT() {
   Serial.println("MQTT initialised");
 }
 
-void handleMQTT(String soundLevel, int bleCount, String crowdLabel) {
+void handleMQTT(String soundLevel, int bleCount, String crowdLabel, int confidence) {
   if (!mqttClient.connected()) {
     connectMQTT();
   }
   mqttClient.loop();
 
-  // QoS 0 — sound (continuous, loss acceptable)
+  // QoS 0: sound (continuous, loss acceptable)
   unsigned long t0 = millis();
   mqttClient.publish(topicSound, soundLevel.c_str(), false);
   Serial.print("QoS 0 latency: "); Serial.print(millis() - t0); Serial.println("ms");
 
-  // QoS 0 — BLE count
+  // QoS 0: BLE count
   mqttClient.publish(topicBLE, String(bleCount).c_str(), false);
 
-  // QoS 0 + retain — crowd index (best available with PubSubClient)
+  // QoS 0 + retain: crowd index
   unsigned long t1 = millis();
   mqttClient.publish(topicCrowd, crowdLabel.c_str(), true);
   Serial.print("Retained publish latency: "); Serial.print(millis() - t1); Serial.println("ms");
+
+  // Confidence
+  mqttClient.publish("sit/canteen/crowd/confidence",
+    confidence == 1 ? "confident" : "uncertain", false);
 
   Serial.println("MQTT published: " + soundLevel + " | " + String(bleCount) + " | " + crowdLabel);
 }

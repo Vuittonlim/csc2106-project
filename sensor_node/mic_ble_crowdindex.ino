@@ -12,6 +12,7 @@ int peakHistory[SMOOTH_SIZE] = {0};
 int smoothIndex = 0;
 int16_t buffer[256];
 int bleCount = 0;
+int crowdConfidence = 1; // 1 = confident, 0 = uncertain
 
 //  Rolling average
 int getSmoothedPeak(int newPeak) {
@@ -31,6 +32,16 @@ int getCrowdIndex(String soundLevel, int bleCount) {
   int bleScore = 0;
   if (bleCount >= 5 && bleCount < 15) bleScore = 1;
   else if (bleCount >= 15) bleScore = 2;
+
+  // Confidence check
+  int diff = abs(soundScore - bleScore);
+  if (diff >= 2) {
+    crowdConfidence = 0;  // sensors strongly disagree
+    Serial.println("WARNING: sensors disagree, low confidence");
+    return bleScore;      // trust BLE over sound when disagreement is high
+  } else {
+    crowdConfidence = 1;
+  }
 
   int combined = soundScore + bleScore;
   if (combined <= 1) return 0;
@@ -122,8 +133,8 @@ void loop() {
   updateDisplay(soundLevel, smoothedPeak, bleCount, crowdLabel, crowdColor);
 
   handleHTTP();
-  handleMQTT(soundLevel, bleCount, crowdLabel);
+  handleMQTT(soundLevel, bleCount, crowdLabel, crowdConfidence);
 
   //  Step 5: BLE Advertise
-  advertiseBLE(soundLevel, bleCount, crowdLabel);
+  advertiseBLE(soundLevel, bleCount, crowdLabel, crowdConfidence);
 }

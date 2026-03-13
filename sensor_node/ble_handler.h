@@ -64,10 +64,11 @@ void scanBLE() {
   }
 }
 
-void advertiseBLE(String soundLevel, int bleCount, String crowdLabel) {
+void advertiseBLE(String soundLevel, int bleCount, String crowdLabel, int confidence) {
   String payload = "{\"s\":\"" + soundLevel.substring(0,1) +
                    "\",\"b\":" + String(bleCount) +
-                   ",\"c\":\"" + crowdLabel.substring(0,1) + "\"}";
+                   ",\"c\":\"" + crowdLabel.substring(0,1) + "\"}" +
+                   "\",\"q\":" + String(confidence) + "}";
   Serial.print("Broadcasting: "); Serial.println(payload);
 
   BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
