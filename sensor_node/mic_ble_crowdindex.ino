@@ -6,6 +6,8 @@
 
 String currentSoundLevel = "Low";
 String currentCrowdLabel = "Low";
+bool mqttPaused = false;
+
 //  Smoothing config
 #define SMOOTH_SIZE 10
 int peakHistory[SMOOTH_SIZE] = {0};
@@ -69,6 +71,9 @@ void updateDisplay(String soundLevel, int smoothedPeak, int ble, String crowdLab
   if (crowdLabel == "Low")         M5.Lcd.println("Good time to visit!");
   else if (crowdLabel == "Medium") M5.Lcd.println("Moderate crowd");
   else                             M5.Lcd.println("Very crowded!");
+  M5.Lcd.setCursor(10, 125);
+  M5.Lcd.setTextColor(mqttPaused ? RED : GREEN);
+  M5.Lcd.println(mqttPaused ? "MQTT: PAUSED" : "MQTT: ON");
   M5.Lcd.setTextSize(2);
 }
 
@@ -96,6 +101,11 @@ void setup() {
 }
 
 void loop() {
+  M5.update();
+  if (M5.BtnA.wasPressed()) {
+    mqttPaused = !mqttPaused;
+    Serial.println(mqttPaused ? "MQTT paused (fallback test)" : "MQTT resumed");
+  }
   //  Step 1: Read mic
   int rawPeak = 0;
   if (M5.Mic.record(buffer, 256, 16000)) {
@@ -133,7 +143,7 @@ void loop() {
   updateDisplay(soundLevel, smoothedPeak, bleCount, crowdLabel, crowdColor);
 
   handleHTTP();
-  handleMQTT(soundLevel, bleCount, crowdLabel, crowdConfidence);
+  if (!mqttPaused) handleMQTT(soundLevel, bleCount, crowdLabel, crowdConfidence);
 
   //  Step 5: BLE Advertise
   advertiseBLE(soundLevel, bleCount, crowdLabel, crowdConfidence);

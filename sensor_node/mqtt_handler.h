@@ -8,11 +8,8 @@ const char* mqttServer = "broker.hivemq.com";
 const int mqttPort = 1883;
 const char* mqttClientId = "M5StickC_Sensor";
 
-const char* topicSound = "sit/canteen/sensor/sound";
-const char* topicBLE   = "sit/canteen/sensor/ble";
-const char* topicCrowd = "sit/canteen/crowd/index";
+const char* topicZone   = "sit/canteen/zone/seating_2";
 const char* topicStatus = "sit/canteen/status/m5stick";
-const char* topicConfidence = "sit/canteen/crowd/confidence";
 
 extern String currentSoundLevel;
 extern String currentCrowdLabel;
@@ -47,24 +44,14 @@ void handleMQTT(String soundLevel, int bleCount, String crowdLabel, int confiden
   }
   mqttClient.loop();
 
-  // QoS 0: sound (continuous, loss acceptable)
-  unsigned long t0 = millis();
-  mqttClient.publish(topicSound, soundLevel.c_str(), false);
-  Serial.print("QoS 0 latency: "); Serial.print(millis() - t0); Serial.println("ms");
+  String payload = "{\"zone\":\"seating_2\""
+                   ",\"s\":\"" + soundLevel.substring(0,1) + "\""
+                   ",\"b\":" + String(bleCount) +
+                   ",\"c\":\"" + crowdLabel.substring(0,1) + "\""
+                   ",\"q\":" + String(confidence) + "}";
 
-  // QoS 0: BLE count
-  mqttClient.publish(topicBLE, String(bleCount).c_str(), false);
-
-  // QoS 0 + retain: crowd index
-  unsigned long t1 = millis();
-  mqttClient.publish(topicCrowd, crowdLabel.c_str(), true);
-  Serial.print("Retained publish latency: "); Serial.print(millis() - t1); Serial.println("ms");
-
-  // Confidence
-  mqttClient.publish("sit/canteen/crowd/confidence",
-    confidence == 1 ? "confident" : "uncertain", false);
-
-  Serial.println("MQTT published: " + soundLevel + " | " + String(bleCount) + " | " + crowdLabel);
+  mqttClient.publish(topicZone, payload.c_str(), true);
+  Serial.println("MQTT published: " + payload);
 }
 
 #endif

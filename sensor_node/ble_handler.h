@@ -6,7 +6,7 @@
 #include <BLEAdvertising.h>
 
 #define SCAN_DURATION 2
-#define BLE_SCAN_INTERVAL 30000
+#define BLE_SCAN_INTERVAL 10000
 
 #define BLE_SMOOTH_SIZE 3
 int bleHistory[BLE_SMOOTH_SIZE] = {0};
@@ -65,21 +65,30 @@ void scanBLE() {
 }
 
 void advertiseBLE(String soundLevel, int bleCount, String crowdLabel, int confidence) {
-  String payload = "{\"s\":\"" + soundLevel.substring(0,1) +
-                   "\",\"b\":" + String(bleCount) +
-                   ",\"c\":\"" + crowdLabel.substring(0,1) + "\"}" +
-                   "\",\"q\":" + String(confidence) + "}";
+  // Compact pipe-delimited format to stay within 31-byte BLE advertisement limit
+  // e.g. "H|12|H|1" = sound|bleCount|crowd|confidence
+  String payload = soundLevel.substring(0,1) + "|" +
+                   String(bleCount) + "|" +
+                   crowdLabel.substring(0,1) + "|" +
+                   String(confidence);
   Serial.print("Broadcasting: "); Serial.println(payload);
 
   BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
+
+  // Advertisement packet: manufacturer data with compact payload (fits in 31 bytes)
   BLEAdvertisementData advData;
-  advData.setName("M5Crowd");
   String manfData = "";
   manfData += (char)0xFF;
   manfData += (char)0xFF;
   manfData += payload;
   advData.setManufacturerData(manfData);
+
+  // Scan response packet: device name (separate 31-byte slot)
+  BLEAdvertisementData scanRsp;
+  scanRsp.setName("M5Crowd");
+
   pAdvertising->setAdvertisementData(advData);
+  pAdvertising->setScanResponseData(scanRsp);
   pAdvertising->start();
   delay(1000);
   pAdvertising->stop();
