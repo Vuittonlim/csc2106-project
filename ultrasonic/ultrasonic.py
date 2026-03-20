@@ -1,6 +1,11 @@
 from machine import Pin
 import utime
 import dht
+import network
+import ujson
+import ntptime
+from coap import send_coap_post
+from config import WIFI_SSID, WIFI_PASSWORD, COAP_SERVER, COAP_PORT
 
 # ── SENSOR PINS SETUP ─────────────────────────────────────────
 # HC-SR04 Ultrasonic Sensor
@@ -34,6 +39,25 @@ last_event_time = 0
 COOLDOWN_MS = 1500      # min time between counting consecutive events
 
 
+# ── WIFI CONNECT ──────────────────────────────────────────────
+wlan = network.WLAN(network.STA_IF)
+
+def connect_wifi():
+    wlan.active(True)
+    if not wlan.isconnected():
+        print("Connecting to WiFi", end="")
+        wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+        while not wlan.isconnected():
+            print(".", end="")
+            utime.sleep(0.5)
+    print("\nWiFi connected!", wlan.ifconfig())
+    try:
+        ntptime.settime()
+        print("Time synced!")
+    except:
+        print("NTP sync failed, using device time")
+
+
 # ── HC-SR04 ULTRASONIC MEASUREMENT FUNCTION ─────────────────────────
 # Returns distance in cm , None if measurement fails
 def measure(trig, echo):
@@ -55,6 +79,23 @@ def measure(trig, echo):
     # calculate distance: time(us) * speed of sound / 2
     return (utime.ticks_diff(utime.ticks_us(), start) * 0.0343) / 2
 
+# ── COAP SEND ─────────────────────────────────────────────────
+def send_event(event):
+    try:
+        payload = ujson.dumps({
+            "event":    event,
+            "people":   people,
+            "temp":     temp     if temp     is not None else -1,  # safe fallback
+            "humidity": humidity if humidity is not None else -1,  # safe fallback
+            "time":     utime.time()                               # unix timestamp
+        })
+        send_coap_post(COAP_SERVER, COAP_PORT, "canteen", payload)
+    except Exception as e:
+        print("CoAP send failed:", e)
+
+# ── CONNECT WIFI FIRST ────────────────────────────────────────
+connect_wifi()
+
 # ── SENSOR CALIBRATION ────────────────────────────────────────────────
 print("Calibrating... keep doorway clear for 3 seconds")
 samplesA, samplesB = [], []
@@ -75,13 +116,19 @@ if not samplesA or not samplesB:
 # Calculate average baseline (doorway clear)
 baselineA = sum(samplesA) / len(samplesA)
 baselineB = sum(samplesB) / len(samplesB)
-TRIGGER_MARGIN = 20 # How much closer an obj must be to count as a trigger
+TRIGGER_MARGIN = 20 # how much closer an obj must be to count as a trigger
+#TRIGGER_PERCENT = 0.15 
 
 print(f"Baseline A: {baselineA:.1f}cm  B: {baselineB:.1f}cm")
+#print(f"Trigger A:  {baselineA * (1 - TRIGGER_PERCENT):.1f}cm  B: {baselineB * (1 - TRIGGER_PERCENT):.1f}cm")
 print("Ready! (A=outside sensor, B=inside sensor)")
 
 # ── MAIN LOOP ────────────────────────────────────────────────
 while True:
+    
+    if not wlan.isconnected():
+        print("WiFi dropped! Reconnecting...")
+        connect_wifi()
 
     # ── DHT22 READ ─────────────────────────────────────────────
     if utime.ticks_diff(utime.ticks_ms(), last_dht_read) > DHT_INTERVAL:
@@ -111,6 +158,8 @@ while True:
     # Check if sensor reading indicates someone blocking it
     a_blocked_raw = dA < (baselineA - TRIGGER_MARGIN)
     b_blocked_raw = dB < (baselineB - TRIGGER_MARGIN)
+    #a_blocked_raw = dA < (baselineA * (1 - TRIGGER_PERCENT))
+    #b_blocked_raw = dB < (baselineB * (1 - TRIGGER_PERCENT))
 
     # increment counter if blocked, reset if not
     a_count = (a_count + 1) if a_blocked_raw else 0
@@ -147,7 +196,10 @@ while True:
             if utime.ticks_diff(utime.ticks_ms(), last_event_time) > COOLDOWN_MS:
                 people += 1
                 print(f"ENTER | People inside: {people}  |  {temp:.1f}C  {humidity:.1f}%")
+
+                send_event("ENTER")
                 last_event_time = utime.ticks_ms()
+
             a_count = 0; b_count = 0
             state = "IDLE"
 
@@ -157,8 +209,12 @@ while True:
             if utime.ticks_diff(utime.ticks_ms(), last_event_time) > COOLDOWN_MS:
                 people = max(0, people - 1)
                 print(f"EXIT  | People inside: {people}  |  {temp:.1f}C  {humidity:.1f}%")
+                
+                send_event("EXIT")
                 last_event_time = utime.ticks_ms()
+                
             a_count = 0; b_count = 0
             state = "IDLE"
 
     utime.sleep(0.05)
+
