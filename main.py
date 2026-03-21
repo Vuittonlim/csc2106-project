@@ -9,7 +9,8 @@ import mqtt_client
 
 PIR_PIN = Pin(14, Pin.IN)
 DHT_PIN = dht.DHT22(Pin(15))
-uart    = UART(1, baudrate=9600, tx=Pin(4), rx=Pin(5))
+uart      = UART(1, baudrate=9600, tx=Pin(4), rx=Pin(5))
+uart_lora = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1))  # to Maker Uno
 
 last_pir_time = 0
 PIR_DECAY_S   = 60 #treat zone as active for 60s after last PIR trigger
@@ -41,15 +42,15 @@ def read_uart_m5():
     return None
 
 def fuse_crowd(m5_data, pir_active):
-    if m5_data is None: # If no data from M5 then fall back to PIR
-        return ("M" if pir_active else "L"), 0
+    if m5_data is None:
+        return "M" if pir_active else "L"
     sound = m5_data.get("s", "L")
-    if not pir_active and sound == "H":  # If no PIR movement but lots of noise, it will be medium
-        sound = "M"
-        return sound, 0
-    if pir_active and sound in ("M", "H"):
-        return sound, 1
-    return sound, 0
+    if not pir_active:
+        return "M" if sound == "H" else "L"
+    # PIR active
+    if sound == "H":
+        return "H"
+    return "M"  # PIR active, sound L or M
 
 print("Zone 1 Pico W starting...")
 time.sleep(2)
@@ -72,12 +73,11 @@ while True:
 
     if now - last_publish >= PUBLISH_INTERVAL:
         temp, humid = read_dht()
-        crowd, q    = fuse_crowd(m5_data, pir)
+        crowd    = fuse_crowd(m5_data, pir)
 
         publish_data = {
             "zone": "seating_1",
             "c":    crowd,
-            "q":    q,
             "pir":  pir,
             "t":    temp,
             "h":    humid,
@@ -88,7 +88,6 @@ while True:
             publish_data["r"] = m5_data.get("r")
 
         payload_str = json.dumps(publish_data)
-
         try:
             mqtt_client.publish(mqtt, config.MQTT_TOPIC, payload_str.encode())
         except Exception as e:
@@ -98,6 +97,9 @@ while True:
             except Exception as e2:
                 print("Reconnect failed:", e2)
 
+        # Send to Maker Uno via LoRa
+        uart_lora.write(payload_str + '\n')
+        print("Sent to LoRa:", payload_str)
+
         last_publish = now
 
-    time.sleep(1)

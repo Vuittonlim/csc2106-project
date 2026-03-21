@@ -80,3 +80,6 @@ def publish(client, topic, payload, retain=False):
 def get_client():
     connect_wifi()
     return connect_mqtt()
+
+
+
