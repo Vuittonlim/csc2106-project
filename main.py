@@ -8,7 +8,7 @@ import config
 import mqtt_client
 
 PIR_PIN = Pin(14, Pin.IN)
-DHT_PIN = dht.DHT22(Pin(15))
+DHT_PIN = dht.DHT22(Pin(6))
 uart      = UART(1, baudrate=115200, tx=Pin(4), rx=Pin(5))
 uart_lora = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1))
 
