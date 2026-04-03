@@ -18,5 +18,6 @@ extern const char* TOPIC_PUB;
 
 // Timing
 extern const unsigned long MQTT_TIMEOUT;
+extern const unsigned long BLE_FALLBACK_TIMEOUT;
 
 #endif

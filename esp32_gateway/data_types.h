@@ -3,9 +3,11 @@
 
 #include <Arduino.h>   
 struct DataPacket {
-  String source;
-  String zone;
+  char source[16];
+  char zone[32];
   int count;
+  float temp;
+  char payload[256];
 };
 
 #endif
