@@ -8,36 +8,42 @@ from coap import send_coap_post
 from config import WIFI_SSID, WIFI_PASSWORD, COAP_SERVER, COAP_PORT
 
 # ── SENSOR PINS SETUP ─────────────────────────────────────────
-# HC-SR04 Ultrasonic Sensor
-trigA = Pin(2, Pin.OUT) # trigger pin for sensor A (outside)
-echoA = Pin(3, Pin.IN)  # echo pin for sensor A
-trigB = Pin(6, Pin.OUT) # trigger pin for sensor B (inside)
-echoB = Pin(7, Pin.IN)  # echo pin for sensor B
+# ultrasonic sensor A 
+trigA = Pin(4, Pin.OUT)
+echoA = Pin(5, Pin.IN)
 
-# PIR motion sensor
-pir        = Pin(26, Pin.IN) # detects movement
+# ultrasonic sensor B
+trigB = Pin(6, Pin.OUT)
+echoB = Pin(7, Pin.IN)
 
-# DHT22 temperature & humidity sensor
-dht_sensor = dht.DHT22(Pin(0))
+pir = Pin(0, Pin.IN)
+dht_sensor = dht.DHT22(Pin(26))
 
 # ── STATE VARIABLES ───────────────────────────────────────────
-people = 0           
-state = "IDLE"       # state machine initial state
-state_timer = None   # timer to reset state after timeout
-TIMEOUT_MS = 10000   # reset to IDLE if no further triggers after 10s
+people = 0            # number of people currently inside
+state = "IDLE"        # state machine initial state
+state_timer = None    # timer to reset state after timeout
+TIMEOUT_MS = 10000    # reset to IDLE if no further triggers after 10s
 
+# DHT22 temperature & humidity sensor
 temp, humidity = None, None
-last_dht_read = utime.ticks_ms()  # track last DHT22 reading
-DHT_INTERVAL  = 3000              # read DHT22 every 3s
+last_dht_read = utime.ticks_ms()
+DHT_INTERVAL = 3000
 
-# Debounce counters — must trigger N times in a row to count
+# Debounce counters
+# sensors must detect 2 consecutive triggers to be considered active
 a_count = 0
 b_count = 0
-DEBOUNCE = 2  # lower = more sensitive, higher = less false triggers
+DEBOUNCE = 2
 
+# cooldown between two events to avoid double counting
 last_event_time = 0
-COOLDOWN_MS = 1500      # min time between counting consecutive events
+COOLDOWN_MS = 1200
 
+# flags to prevent double counting
+last_was_enter = False
+last_was_exit = False
+last_direction_time = 0
 
 # ── WIFI CONNECT ──────────────────────────────────────────────
 wlan = network.WLAN(network.STA_IF)
@@ -57,50 +63,44 @@ def connect_wifi():
     except:
         print("NTP sync failed, using device time")
 
-
-# ── HC-SR04 ULTRASONIC MEASUREMENT FUNCTION ─────────────────────────
-# Returns distance in cm , None if measurement fails
+# sends trigger pulse and measure echo time
 def measure(trig, echo):
     trig.low(); utime.sleep_us(2)
     trig.high(); utime.sleep_us(10); trig.low()
     
-    # wait for echo pin to go high (signal sent)
     timeout = utime.ticks_us()
     while echo.value() == 0:
         if utime.ticks_diff(utime.ticks_us(), timeout) > 30000:
             return None
         
     start = utime.ticks_us()
-    # wait for echo pin to go low (signal received)
     while echo.value() == 1:
         if utime.ticks_diff(utime.ticks_us(), start) > 30000:
             return None
         
-    # calculate distance: time(us) * speed of sound / 2
     return (utime.ticks_diff(utime.ticks_us(), start) * 0.0343) / 2
 
-# ── COAP SEND ─────────────────────────────────────────────────
+# send event to server via COAP
 def send_event(event):
     try:
         payload = ujson.dumps({
             "event":    event,
             "people":   people,
-            "temp":     temp     if temp     is not None else -1,  # safe fallback
-            "humidity": humidity if humidity is not None else -1,  # safe fallback
-            "time":     utime.time()                               # unix timestamp
+            "temp":     temp if temp is not None else -1,
+            "humidity": humidity if humidity is not None else -1,
+            "time":     utime.time()
         })
         send_coap_post(COAP_SERVER, COAP_PORT, "canteen", payload)
     except Exception as e:
         print("CoAP send failed:", e)
 
-# ── CONNECT WIFI FIRST ────────────────────────────────────────
 connect_wifi()
 
-# ── SENSOR CALIBRATION ────────────────────────────────────────────────
+# sensor calibration
 print("Calibrating... keep doorway clear for 3 seconds")
 samplesA, samplesB = [], []
 
-# Take 30 measurements for each sensor to determine baseline distance
+# collect baseline readings when doorway is empty
 for _ in range(30):
     dA = measure(trigA, echoA)
     dB = measure(trigB, echoB)
@@ -108,113 +108,125 @@ for _ in range(30):
     if dB: samplesB.append(dB)
     utime.sleep(0.1)
 
-# Check if sensors responded
+# check sensors responded
 if not samplesA or not samplesB:
     print("ERROR: Sensor not responding! Check wiring.")
     raise SystemExit
 
-# Calculate average baseline (doorway clear)
+# compute average baseline distance
 baselineA = sum(samplesA) / len(samplesA)
 baselineB = sum(samplesB) / len(samplesB)
-TRIGGER_MARGIN = 20 # how much closer an obj must be to count as a trigger
-#TRIGGER_PERCENT = 0.15 
+
+# trigger threshold
+# sensor must read 25% closer than baseline to count as blocked
+TRIGGER_PERCENT = 0.25
 
 print(f"Baseline A: {baselineA:.1f}cm  B: {baselineB:.1f}cm")
-#print(f"Trigger A:  {baselineA * (1 - TRIGGER_PERCENT):.1f}cm  B: {baselineB * (1 - TRIGGER_PERCENT):.1f}cm")
 print("Ready! (A=outside sensor, B=inside sensor)")
 
 # ── MAIN LOOP ────────────────────────────────────────────────
 while True:
     
+    now = utime.ticks_ms()
+    
     if not wlan.isconnected():
         print("WiFi dropped! Reconnecting...")
         connect_wifi()
 
-    # ── DHT22 READ ─────────────────────────────────────────────
-    if utime.ticks_diff(utime.ticks_ms(), last_dht_read) > DHT_INTERVAL:
+    # read temp and humidity
+    if utime.ticks_diff(now, last_dht_read) > DHT_INTERVAL:
         try:
-            dht_sensor.measure()                 # Trigger DHT22 measurement
-            temp     = dht_sensor.temperature()
+            dht_sensor.measure()
+            temp = dht_sensor.temperature()
             humidity = dht_sensor.humidity()
         except Exception as e:
             print("DHT22 read failed:", e)
-        last_dht_read = utime.ticks_ms()
+        last_dht_read = now
 
-    # ── PIR MOTION SENSOR ──────────────────────────────────────────
-    # If PIR is triggered and state is idle, reset counters
-    if pir.value() == 0 and state == "IDLE":
+    # Reset direction flags after 1 second
+    if last_was_enter and utime.ticks_diff(now, last_direction_time) > 1000:
+        last_was_enter = False
+    if last_was_exit and utime.ticks_diff(now, last_direction_time) > 1000:
+        last_was_exit = False
+
+    
+    # ── PIR STUCK STATE RESET ──────────────────────────────────────
+    pir_active = pir.value() == 1
+    
+    # if PIR detects NO motion for 3 secs but the state machine is stuck mid-detection
+    # reset the state machine
+    if not pir_active and state != "IDLE" and utime.ticks_diff(now, state_timer) > 3000:
+        state = "IDLE"
         a_count = 0
         b_count = 0
-        utime.sleep(0.05)
-        continue
     
-    # ── ULTRASONIC MEASUREMENT ───────────────────────────────
+    # Ultrasonic sensor readings
     dA = measure(trigA, echoA)
     dB = measure(trigB, echoB)
-    if dA is None or dB is None: #Skip if sensor fails
+    if dA is None or dB is None:
         continue
+    
+    # check if sensor is blocked
+    a_blocked_raw = dA < (baselineA * (1 - TRIGGER_PERCENT))
+    b_blocked_raw = dB < (baselineB * (1 - TRIGGER_PERCENT))
 
-    # ── DEBOUNCE: count consecutive triggers ──────────────
-    # Check if sensor reading indicates someone blocking it
-    a_blocked_raw = dA < (baselineA - TRIGGER_MARGIN)
-    b_blocked_raw = dB < (baselineB - TRIGGER_MARGIN)
-    #a_blocked_raw = dA < (baselineA * (1 - TRIGGER_PERCENT))
-    #b_blocked_raw = dB < (baselineB * (1 - TRIGGER_PERCENT))
-
-    # increment counter if blocked, reset if not
+    # debounce logic
     a_count = (a_count + 1) if a_blocked_raw else 0
     b_count = (b_count + 1) if b_blocked_raw else 0
-
-    # confirm blockage if counter exceeds DEBOUNCE threshold
+    
     a_blocked = a_count >= DEBOUNCE
     b_blocked = b_count >= DEBOUNCE
 
-    # ── TIMEOUT RESET ─────────────────────────────────────
-    # reset state to IDLE if waiting too long without completing trigger
-    if state != "IDLE" and utime.ticks_diff(utime.ticks_ms(), state_timer) > TIMEOUT_MS:
-        print("Timeout reset")
+    # timeout reset
+    if state != "IDLE" and utime.ticks_diff(now, state_timer) > TIMEOUT_MS:
         a_count = 0
         b_count = 0
         state = "IDLE"
 
     # ── STATE MACHINE ─────────────────────────────────────
     if state == "IDLE":
-        # detect 1st sensor triggered
         if a_blocked:
             state = "A_TRIGGERED"
-            state_timer = utime.ticks_ms()
-            b_count = 0   # reset B so we wait for fresh B trigger
+            state_timer = now
+            b_count = 0
         elif b_blocked:
             state = "B_TRIGGERED"
-            state_timer = utime.ticks_ms()
+            state_timer = now
             a_count = 0
 
+    # -- ENTER EVENT (A->B)
     elif state == "A_TRIGGERED":
-        # if B is triggered after A, it counts as ENTER
         if b_blocked:
-            # Only count if enough time has passed since last event
-            if utime.ticks_diff(utime.ticks_ms(), last_event_time) > COOLDOWN_MS:
-                people += 1
-                print(f"ENTER | People inside: {people}  |  {temp:.1f}C  {humidity:.1f}%")
-
-                send_event("ENTER")
-                last_event_time = utime.ticks_ms()
-
-            a_count = 0; b_count = 0
+            # Only count if last event wasn't ENTER
+            if not last_was_enter:
+                if utime.ticks_diff(now, last_event_time) > COOLDOWN_MS:
+                    people += 1
+                    print(f"ENTER | People inside: {people}  |  {temp:.1f}C  {humidity:.1f}%")
+                    send_event("ENTER")
+                    last_event_time = now
+                    last_was_enter = True
+                    last_was_exit = False
+                    last_direction_time = now
+            a_count = 0
+            b_count = 0
             state = "IDLE"
 
+    # EXIT EVENT (B->A)
     elif state == "B_TRIGGERED":
-        # If A is triggered after B, it counts as EXIT
         if a_blocked:
-            if utime.ticks_diff(utime.ticks_ms(), last_event_time) > COOLDOWN_MS:
-                people = max(0, people - 1)
-                print(f"EXIT  | People inside: {people}  |  {temp:.1f}C  {humidity:.1f}%")
-                
-                send_event("EXIT")
-                last_event_time = utime.ticks_ms()
-                
-            a_count = 0; b_count = 0
+            # Only count if last event wasn't EXIT
+            if not last_was_exit:
+                if utime.ticks_diff(now, last_event_time) > COOLDOWN_MS:
+                    if people > 0:
+                        people -= 1
+                        print(f"EXIT  | People inside: {people}  |  {temp:.1f}C  {humidity:.1f}%")
+                        send_event("EXIT")
+                        last_event_time = now
+                        last_was_exit = True
+                        last_was_enter = False
+                        last_direction_time = now
+            a_count = 0
+            b_count = 0
             state = "IDLE"
 
     utime.sleep(0.05)
-

@@ -10,18 +10,11 @@ class CanteenResource(resource.Resource):
             payload = request.payload.decode()
             data    = json.loads(payload)
 
-            # Print to terminal
-            #print(f"[{datetime.fromtimestamp(data['time']).strftime('%Y-%m-%d %H:%M:%S')}] {data}")
-
             readable = datetime.fromtimestamp(data['time']).strftime('%Y-%m-%d %H:%M:%S')
             data_to_print = data.copy()
             data_to_print.pop('time', None)  # remove 'time' field
 
             print(f"[{readable}] {data_to_print}")
-
-            # Save to file
-            with open("canteen_log.json", "a") as f:
-                f.write(json.dumps(data) + "\n")
 
         except Exception as e:
             print("Failed to parse payload:", e)
@@ -31,7 +24,7 @@ class CanteenResource(resource.Resource):
 async def main():
     root = resource.Site()
     root.add_resource(['canteen'], CanteenResource())
-    await aiocoap.Context.create_server_context(root, bind=('10.44.35.129', 5683))
+    await aiocoap.Context.create_server_context(root, bind=('172.28.243.129', 5683))
     print("CoAP server running on port 5683...")
     await asyncio.get_event_loop().create_future()
 
