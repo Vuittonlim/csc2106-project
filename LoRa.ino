@@ -61,7 +61,7 @@ void loop() {
     if (payload.length() > 0) {
       rf95.send((uint8_t *)payload.c_str(), payload.length());
       rf95.waitPacketSent();
-      Serial.println("ACK");
+      Serial.print("ACK\n");
 
       oled.clear();
       oled.println("Sent:");
