@@ -21,19 +21,24 @@ extern PubSubClient client;      ///< MQTT client for publishing analytics
 int confidence = 1;              ///< Confidence level for published analytics (1 = default)
 extern void publishAnalytics(String payload);
 
-// --- Zone occupancy state ---
-int   seating1_Count = 0;
-int   seating2_Count = 0;
-float seating1_Temp  = 0.0;
-float seating2_Temp  = 0.0;
+// --- Zone 1 state ---
+float seating1_Temp     = 0.0f;
+float seating1_Humidity = 0.0f;
+int   seating1_PIR      = 0;
+char  seating1_Level[16] = "Low"; ///< Acoustic label: "s" (LoRa) or "c" (MQTT fallback)
 
-// Zone level labels — Zone 1 comes from LoRa payload; Zone 2 derived from count
-char seating1_Level[16] = "Low";
-char seating2_Level[16] = "Low";
+// --- Zone 2 state ---
+int   seating2_Count      = 0;    ///< Raw BLE scan count
+int   seating2_Confidence = 1;    ///< 1 = sound+BLE agree; 0 = disagree
+float seating2_Temp       = 0.0f;
+char  seating2_Level[16]  = "Low";
+char  seating2_Crowd[16]  = "Low"; ///< Pre-fused crowd label (confidence=1 path)
+char  seating2_Sound[16]  = "Low"; ///< Raw acoustic label (confidence=0 blend path)
 
 // --- Entry/exit flow state ---
-int totalPeople = 0;   ///< Running total of people (from CoAP)
-int lastFlow    = 0;   ///< Direction of last flow event: +1 = entry, -1 = exit
+int   totalPeople   = 0;     ///< Running total of people (from CoAP)
+int   lastFlow      = 0;     ///< Direction of last flow event: +1 = entry, -1 = exit
+float entrance_Temp = 0.0f;  ///< Entrance temperature from CoAP packet
 
 // --- Zone capacity limits ---
 const int MAX_SEATING1 = 140;
@@ -135,34 +140,52 @@ void processingTask(void *pvParameters) {
       Serial.println(packet.count);
 
       if (strcmp(packet.source, "coap") == 0) {
-        // CoAP carries an absolute people count and an ENTER/EXIT event
+        // CoAP carries an absolute people count, ENTER/EXIT event, and temperature
         totalPeople = packet.count;
         lastFlow    = (strcmp(packet.payload, "EXIT") == 0) ? -1 : 1;
-        Serial.print("[FLOW] event=");
-        Serial.print(packet.payload);
-        Serial.print(" people=");
-        Serial.println(totalPeople);
+        if (packet.temp > 0) entrance_Temp = packet.temp;
+        Serial.print("[FLOW] event=");   Serial.print(packet.payload);
+        Serial.print(" people=");        Serial.print(totalPeople);
+        Serial.print(" t=");             Serial.println(entrance_Temp, 1);
 
       } else if (strcmp(packet.zone, "1") == 0) {
-        // Zone 1 — count unused; level label comes from LoRa payload
-        if (packet.temp > 0) seating1_Temp = packet.temp;
+        // Zone 1 — works for both sources:
+        //   source="lora" : payload = acoustic label from "s" (raw sound), pir + humidity populated
+        //   source="mqtt" : payload = fused label from "c" (PIR+sound fused on Pico W), pir + humidity populated
+        if (packet.temp     > 0)    seating1_Temp     = packet.temp;
+        if (packet.humidity > 0)    seating1_Humidity = packet.humidity;
+        seating1_PIR = packet.pir;
         if (packet.payload[0] != '\0') {
           strncpy(seating1_Level, packet.payload, sizeof(seating1_Level) - 1);
           seating1_Level[sizeof(seating1_Level) - 1] = '\0';
         }
-        Serial.print("[ZONE 1] Level=");
-        Serial.print(seating1_Level);
-        Serial.print(" Temp=");
-        Serial.println(seating1_Temp);
+        Serial.print("[ZONE 1] src=");     Serial.print(packet.source);
+        Serial.print(" level=");           Serial.print(seating1_Level);
+        Serial.print(" pir=");             Serial.print(seating1_PIR);
+        Serial.print(" humidity=");        Serial.print(seating1_Humidity, 1);
+        Serial.print(" temp=");            Serial.println(seating1_Temp, 1);
 
       } else if (strcmp(packet.zone, "2") == 0) {
-        // Zone 2 — count used; level derived in compute block
-        seating2_Count = packet.count;
+        // Zone 2 — primary MQTT; BLE fallback handled by ble_handler when MQTT silent >30s
+        // packet.payload  = pre-fused crowd label ("Low"/"Medium"/"High")
+        // packet.count    = raw BLE scan count (used only when confidence == 0)
+        // packet.confidence = 1 (sound+BLE agree) or 0 (disagree)
+        seating2_Count      = packet.count;
+        seating2_Confidence = packet.confidence;
         if (packet.temp > 0) seating2_Temp = packet.temp;
-        Serial.print("[ZONE 2] Count=");
-        Serial.print(seating2_Count);
-        Serial.print(" Temp=");
-        Serial.println(seating2_Temp);
+        if (packet.payload[0] != '\0') {
+          strncpy(seating2_Crowd, packet.payload, sizeof(seating2_Crowd) - 1);
+          seating2_Crowd[sizeof(seating2_Crowd) - 1] = '\0';
+        }
+        if (packet.sound[0] != '\0') {
+          strncpy(seating2_Sound, packet.sound, sizeof(seating2_Sound) - 1);
+          seating2_Sound[sizeof(seating2_Sound) - 1] = '\0';
+        }
+        Serial.print("[ZONE 2] src=");    Serial.print(packet.source);
+        Serial.print(" crowd=");          Serial.print(seating2_Crowd);
+        Serial.print(" sound=");          Serial.print(seating2_Sound);
+        Serial.print(" count=");          Serial.print(seating2_Count);
+        Serial.print(" conf=");           Serial.println(seating2_Confidence);
 
       } else {
         Serial.print("[PROCESS] Unknown zone: ");
@@ -175,21 +198,60 @@ void processingTask(void *pvParameters) {
     if (now - lastCompute >= COMPUTE_INTERVAL) {
       Serial.println("\n[COMPUTE] Running analytics...");
 
-      // Zone 1 density is derived from its level label (LoRa sends L/M/H)
-      float d1 = levelToFloat(seating1_Level);
+      // d1 — Zone 1: acoustic base (s or c) + PIR modifier + humidity nudge
+      //
+      //  LoRa path : payload = raw acoustic "s" label
+      //              PIR confirms or contradicts the sound reading
+      //  MQTT path : payload = Pico W fused "c" label (already accounts for PIR)
+      //              PIR still applied as a secondary confirmation signal
+      //
+      //  Formula:
+      //    base   = levelToFloat(acoustic label)   → 0.2 / 0.55 / 0.85
+      //    + pir  = +0.10 if motion detected, -0.10 if no motion
+      //    + hum  = +0.05 if humidity > 70 % (body heat/moisture indicator)
+      //    clamped to [0.0, 1.0]
+      // d1 — Zone 1
+      //   base  = acoustic label (s from LoRa, c from MQTT fallback) → float
+      //   + pir = ±0.10 (motion confirms or contradicts sound)
+      //   + hum = +0.05 if humidity > 70% (body heat/moisture indicator)
+      //   seating1_Level is then synced to the adjusted value so display
+      //   and overallLevel() comparison both reflect the real computed level
+      float d1_base  = levelToFloat(seating1_Level);
+      float d1_pir   = seating1_PIR ? +0.10f : -0.10f;
+      float d1_humid = (seating1_Humidity > 70.0f) ? +0.05f : 0.0f;
+      float d1       = d1_base + d1_pir + d1_humid;
+      if (d1 < 0.0f) d1 = 0.0f;
+      if (d1 > 1.0f) d1 = 1.0f;
+      // Sync Zone 1 display label to adjusted d1
+      strncpy(seating1_Level, densityToLevel(d1), sizeof(seating1_Level) - 1);
+      seating1_Level[sizeof(seating1_Level) - 1] = '\0';
 
-      // Zone 2 density is derived from its count
-      float d2 = (float)seating2_Count / MAX_SEATING2;
+      // d2 — Zone 2
+      //   confidence == 1: sound and BLE agree → trust pre-fused crowd label
+      //   confidence == 0: sound and BLE disagree → blend both signals equally
+      //     soundScore  = levelToFloat(seating2_Sound)   → acoustic estimate
+      //     bleScore    = seating2_Count / 32.0           → BLE device density
+      //     d2          = (soundScore + bleScore) / 2     → average of both
+      float d2;
+      if (seating2_Confidence == 1) {
+        d2 = levelToFloat(seating2_Crowd);
+      } else {
+        float soundScore = levelToFloat(seating2_Sound);
+        float bleScore   = (float)seating2_Count / 32.0f;
+        if (bleScore > 1.0f) bleScore = 1.0f;
+        d2 = (soundScore + bleScore) / 2.0f;
+      }
       strncpy(seating2_Level, densityToLevel(d2), sizeof(seating2_Level) - 1);
       seating2_Level[sizeof(seating2_Level) - 1] = '\0';
 
       float overallDensity = (d1 + d2) / 2.0f;
 
-      // Average temperature
-      float avgTemp  = 0.0f;
-      int   tempCnt  = 0;
-      if (seating1_Temp > 0) { avgTemp += seating1_Temp; tempCnt++; }
-      if (seating2_Temp > 0) { avgTemp += seating2_Temp; tempCnt++; }
+      // Average temperature — Zone 1 (LoRa/MQTT) + Entrance (CoAP)
+      // Zone 2 MQTT has no temperature sensor so it is excluded
+      float avgTemp = 0.0f;
+      int   tempCnt = 0;
+      if (seating1_Temp  > 0) { avgTemp += seating1_Temp;  tempCnt++; }
+      if (entrance_Temp  > 0) { avgTemp += entrance_Temp;  tempCnt++; }
       if (tempCnt > 0) avgTemp /= tempCnt;
 
       // Flow adjustment
@@ -253,9 +315,13 @@ void processingTask(void *pvParameters) {
       Serial.println("-----------------------------");
       Serial.print("  Zone 1 : ");
       Serial.print(seating1_Level);
+      Serial.print(" | PIR: ");
+      Serial.print(seating1_PIR);
       Serial.print(" | Temp: ");
       Serial.print(seating1_Temp, 1);
-      Serial.println("C");
+      Serial.print("C | Humidity: ");
+      Serial.print(seating1_Humidity, 1);
+      Serial.println("%");
 
       Serial.print("  Zone 2 : ");
       Serial.print(seating2_Level);
@@ -272,9 +338,7 @@ void processingTask(void *pvParameters) {
         Serial.println(" (higher taken)");
       }
 
-      Serial.print("  Avg Temp  : ");
-      Serial.print(avgTemp, 1);
-      Serial.println("C");
+      Serial.print("  Avg Temp  : "); Serial.print(avgTemp, 1); Serial.println("C");
       Serial.print("  Score     : ");
       Serial.println(crowdScore, 2);
       Serial.print("  Predicted : ");
@@ -296,7 +360,6 @@ void processingTask(void *pvParameters) {
         doc["level"]         = overall;
         doc["bestTime"]      = bestTime;
         doc["prolongedHigh"] = prolongedHigh;
-        doc["confidence"]    = confidence;
         doc["avgTemp"]       = serialized(String(avgTemp, 1));
 
         JsonObject zones = doc.createNestedObject("zones");

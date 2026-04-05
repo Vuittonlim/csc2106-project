@@ -91,25 +91,56 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   if (!err) {
 
-    // Support both "b" (legacy) and "ble" field names for count
-    int count = doc.containsKey("ble") ? (int)doc["ble"] : (int)doc["b"];
-    float temp = doc["t"] | 0.0f;
+    float temp    = doc["t"]        | 0.0f;
     bool fallback = doc["fallback"] | false;
 
-    // SEND TO QUEUE
     DataPacket packet;
     strncpy(packet.source, fallback ? "ble" : "mqtt", sizeof(packet.source) - 1);
     packet.source[sizeof(packet.source) - 1] = '\0';
     strncpy(packet.zone, zone.c_str(), sizeof(packet.zone) - 1);
     packet.zone[sizeof(packet.zone) - 1] = '\0';
-    packet.count = count;
-    packet.temp  = temp;
-    packet.payload[0] = '\0';
+    packet.temp = temp;
+
+    if (zone == "1") {
+      // Zone 1 MQTT fallback — "c" is the Pico W fused result (PIR + sound).
+      // Also forward pir and humidity so processor can apply the same
+      // modifier it uses on the LoRa path.
+      String code = doc["c"] | "L";
+      const char* label = (code == "H") ? "High" : (code == "M") ? "Medium" : "Low";
+      packet.count    = 0;
+      packet.pir      = doc["pir"] | 0;
+      packet.humidity = doc["h"]   | 0.0f;
+      packet.sound[0] = '\0';  // Zone 1 has no sound field in this struct
+      strncpy(packet.payload, label, sizeof(packet.payload) - 1);
+      packet.payload[sizeof(packet.payload) - 1] = '\0';
+      Serial.print("[MQTT → QUEUE] zone=1 level="); Serial.print(label);
+      Serial.print(" pir="); Serial.print(packet.pir);
+      Serial.print(" h=");   Serial.println(packet.humidity, 1);
+
+    } else {
+      // Zone 2 — BLE count + raw sound + pre-fused crowd label + confidence flag
+      int    count      = doc.containsKey("ble") ? (int)doc["ble"] : (int)doc["b"];
+      int    conf       = doc["confidence"] | 1;
+      String crowdLbl   = doc["crowd"]      | "Low";
+      String soundRaw   = doc["sound"]      | "Low";  // raw acoustic classification
+
+      packet.count      = count;
+      packet.confidence = conf;
+      packet.pir        = 0;
+      packet.humidity   = 0.0f;
+      strncpy(packet.payload, crowdLbl.c_str(), sizeof(packet.payload) - 1);
+      packet.payload[sizeof(packet.payload) - 1] = '\0';
+      strncpy(packet.sound, soundRaw.c_str(), sizeof(packet.sound) - 1);
+      packet.sound[sizeof(packet.sound) - 1] = '\0';
+
+      Serial.print("[MQTT → QUEUE] zone=2 count=");  Serial.print(count);
+      Serial.print(" sound=");                        Serial.print(soundRaw);
+      Serial.print(" crowd=");                        Serial.print(crowdLbl);
+      Serial.print(" confidence=");                   Serial.println(conf);
+    }
 
     if (xQueueSend(dataQueue, &packet, pdMS_TO_TICKS(200)) != pdPASS) {
       Serial.println("[MQTT] Queue full — packet dropped for zone " + zone);
-    } else {
-      Serial.println("[MQTT → QUEUE] " + zone + " = " + String(count));
     }
 
   } else {

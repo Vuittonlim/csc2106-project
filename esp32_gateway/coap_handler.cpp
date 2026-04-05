@@ -92,20 +92,27 @@
           continue;
         }
 
-        int   people = doc["people"] | 0;
-        const char* event = doc["event"] | "ENTER";
+        int         people = doc["people"] | 0;
+        const char* event  = doc["event"]  | "ENTER";
+        float       temp   = doc["t"]      | 0.0f;
 
-        Serial.printf("[COAP] event=%s people=%d\n", event, people);
+        Serial.print("[COAP] event="); Serial.print(event);
+        Serial.print(" people=");      Serial.print(people);
+        Serial.print(" t=");           Serial.println(temp, 1);
 
         // Build DataPacket — event string goes into payload field so
         // processingTask() can read it to set lastFlow (+1 ENTER / -1 EXIT)
         DataPacket packet;
+        packet.confidence = 1;
+        packet.pir        = 0;
+        packet.humidity   = 0.0f;
+        packet.sound[0]   = '\0';
         strncpy(packet.source, "coap", sizeof(packet.source) - 1);
         packet.source[sizeof(packet.source) - 1] = '\0';
         strncpy(packet.zone, "entrance", sizeof(packet.zone) - 1);
         packet.zone[sizeof(packet.zone) - 1] = '\0';
         packet.count = people;
-        packet.temp  = 0.0f;
+        packet.temp  = temp;
         strncpy(packet.payload, event, sizeof(packet.payload) - 1);
         packet.payload[sizeof(packet.payload) - 1] = '\0';
 

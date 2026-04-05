@@ -129,6 +129,10 @@ void handleBLE() {
 
   // Build a DataPacket 
   DataPacket packet;
+  packet.confidence = 0;
+  packet.pir        = 0;
+  packet.humidity   = 0.0f;
+  packet.sound[0]   = '\0';
   strncpy(packet.source, "ble", sizeof(packet.source) - 1);
   packet.source[sizeof(packet.source) - 1] = '\0';
   strncpy(packet.zone, "2", sizeof(packet.zone) - 1);  // BLE is fallback for zone 2

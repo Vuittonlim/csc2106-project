@@ -63,6 +63,21 @@ static String zoneNameToNumber(const String& zoneFull) {
  *
  * @param pvParameters Unused (required by FreeRTOS task signature).
  */
+/**
+ * @brief Map a compact crowd level code to a human-readable label.
+ *
+ * The Pico W transmits single-character codes in the "c" field:
+ *   "L" → "Low", "M" → "Medium", "H" → "High"
+ *
+ * @param level Single-character level code from the LoRa JSON payload.
+ * @return Pointer to a static label string.
+ */
+static const char* crowdLevelToLabel(const String& level) {
+    if (level == "H") return "High";
+    if (level == "M") return "Medium";
+    return "Low";
+}
+
 void loraTask(void *pvParameters) {
     while (true) {
         if (Serial2.available()) {
@@ -95,22 +110,33 @@ void loraTask(void *pvParameters) {
             }
 
             // Extract fields — all default to safe values if the key is absent
-            String crowdLevel = doc["s"]    | "L";
+            // LoRa payload uses "s" for raw acoustic noise classification.
+            // "c" (fused) is NOT present in LoRa frames — only in MQTT fallback.
+            // The processor will fuse s + pir + humidity into d1.
+            String soundLevel = doc["s"]    | "L";   // raw acoustic: "L"/"M"/"H"
             String zoneFull   = doc["zone"] | "seating_1";
             int    pir        = doc["pir"]  | 0;
             float  temp       = doc["t"]    | 0.0;
             float  humidity   = doc["h"]    | 0.0;
 
-            String zoneNum        = zoneNameToNumber(zoneFull);
+            String zoneNum           = zoneNameToNumber(zoneFull);
+            const char* levelLabel   = crowdLevelToLabel(soundLevel);
 
-            Serial.printf("[LoRa] RSSI=%d | zone=%s | level=%s | pir=%d | t=%.1f | h=%.1f\n",
-                          rssi, zoneNum.c_str(), crowdLevel , pir, temp, humidity);
+            Serial.print("[LoRa] RSSI="); Serial.print(rssi);
+            Serial.print(" | zone=");    Serial.print(zoneNum);
+            Serial.print(" | sound=");   Serial.print(levelLabel);
+            Serial.print(" | pir=");     Serial.print(pir);
+            Serial.print(" | t=");       Serial.print(temp, 1);
+            Serial.print(" | h=");       Serial.println(humidity, 1);
 
-            // Build DataPacket for processingTask().
-            // Level label goes into packet.payload (not count) because LoRa
-            // transmits qualitative levels, not raw occupancy numbers.
-            // Store level label in payload; count not used for LoRa zone data
+            // packet.payload = acoustic level label ("Low"/"Medium"/"High") from "s"
+            // packet.pir     = raw PIR value — processor uses this to boost/reduce d1
+            // packet.humidity = for humidity-based density nudge in processor
             DataPacket packet;
+            packet.confidence = 1;
+            packet.pir        = pir;
+            packet.humidity   = humidity;
+            packet.sound[0]   = '\0';
             strncpy(packet.source, "lora", sizeof(packet.source) - 1);
             packet.source[sizeof(packet.source) - 1] = '\0';
             strncpy(packet.zone, zoneNum.c_str(), sizeof(packet.zone) - 1);
