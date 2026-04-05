@@ -14,9 +14,8 @@ RH_RF95 rf95(RFM95_CS, RFM95_INT);
 SSD1306AsciiWire oled;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200); // Match Pico's baud rate
   Wire.begin();
-  
   oled.begin(&Adafruit128x64, OLED_ADDRESS);
   oled.setFont(System5x7);
   oled.clear();
@@ -24,6 +23,7 @@ void setup() {
 
   pinMode(RFM95_RST, OUTPUT);
   digitalWrite(RFM95_RST, HIGH);
+  delay(10);
   digitalWrite(RFM95_RST, LOW);
   delay(10);
   digitalWrite(RFM95_RST, HIGH);
@@ -41,23 +41,33 @@ void setup() {
     while (1);
   }
 
+  rf95.setSpreadingFactor(7);
+  rf95.setSignalBandwidth(125000);
+  rf95.setCodingRate4(5);
   rf95.setTxPower(13, false);
+
   oled.clear();
-  oled.println("LoRa ready");
+  oled.println("LoRa Ready");
 }
 
 void loop() {
   if (Serial.available()) {
     String payload = Serial.readStringUntil('\n');
     payload.trim();
+
+    static uint16_t seq = 0;
+    payload = String(seq++) + "|" + payload;
     
     if (payload.length() > 0) {
       rf95.send((uint8_t *)payload.c_str(), payload.length());
       rf95.waitPacketSent();
-      
+      Serial.print("ACK\n");
+
       oled.clear();
       oled.println("Sent:");
       oled.println(payload);
+      oled.print("RSSI: ");
+      oled.println(rf95.lastRssi());
     }
   }
 }
